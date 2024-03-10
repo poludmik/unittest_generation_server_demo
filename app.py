@@ -1,5 +1,13 @@
 from flask import Flask, jsonify, request
 from langchain_openai import OpenAI
+from transformers import AutoTokenizer
+import transformers
+import torch
+
+
+BLUE = "\033[34m"
+END = "\033[0m"
+
 
 app = Flask(__name__)
 
@@ -67,8 +75,9 @@ Follow the backticks notation and output only the code for the unit tests class 
 """
 
 
-def call_gpt(users_code_chunk: str = ""):
-    llm = OpenAI(model_name="gpt-3.5-turbo-instruct")
+def call_gpt(users_code_chunk: str = "", model_name: str = "gpt-3.5-turbo-instruct"):
+    print(f"Using {BLUE}'{model_name}'{END} LLM.")
+    llm = OpenAI(model_name=model_name)
     question = PROMPT.format(users_code_chunk=users_code_chunk, one_shot_example=TEST_EXAMPLE)
     answer = llm.invoke(
                         question,
@@ -82,6 +91,33 @@ def call_gpt(users_code_chunk: str = ""):
     return answer
 
 
+def call_codellama(users_code_chunk: str = "", model_name: str = "codellama/CodeLlama-7b-Instruct-hf"):
+    print(f"Using {BLUE}'{model_name}'{END} LLM.")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    pipeline = transformers.pipeline(
+        "text-generation",
+        model="codellama/CodeLlama-7b-hf",
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+
+    question = PROMPT.format(users_code_chunk=users_code_chunk, one_shot_example=TEST_EXAMPLE)
+
+    sequences = pipeline(
+        question,
+        do_sample=False,
+        temperature=1e-9,
+        top_p=1.0,
+        num_return_sequences=1,
+        eos_token_id=tokenizer.eos_token_id,
+        max_length=1000,
+    )
+    
+    assert type(sequences[0]['generated_text']) == str
+
+    return sequences[0]['generated_text']
+
+
 @app.route('/generate_unittest', methods=['GET'])
 def generate_unittest():
     try:
@@ -90,12 +126,20 @@ def generate_unittest():
         if 'code_chunk' not in received_data:
             return jsonify({'error': 'Missing \'code_chunk\' in the JSON body of the request'}), 400
         
-        return call_gpt(received_data['code_chunk'])
-    
+        if 'model_name' not in received_data:
+            return call_gpt(received_data['code_chunk'])
+        else:
+            if received_data["model_name"].startswith("gpt"):
+                return call_gpt(received_data['code_chunk'], model_name=received_data['model_name'])
+            
+            if received_data['model_name'].startswith("codellama"):
+                return call_codellama(received_data['code_chunk'], model_name=received_data["model_name"])
+        
+        return 'Invalid model name: either gpt-... or codellama... are supported.'
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=8080)
